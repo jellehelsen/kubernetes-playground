@@ -1,0 +1,131 @@
+- name: System setup
+  hosts: all
+  become: true
+  vars:
+    kubernetes_enable_web_ui: true
+    kubernetes_version_rhel_package: '1.14.0'
+  roles:
+    - geerlingguy.docker
+    - geerlingguy.kubernetes
+    - andrewrothstein.kubernetes-helm
+  tasks:
+    - name: Install epel
+      yum:
+        name:
+          - git
+          - epel-release
+
+    - name: Install pip
+      yum:
+        name: python-pip
+
+    - name: Upgrade python setuptools
+      pip:
+        name: setuptools
+        state: latest
+
+    - name: Install pyhelm
+      pip:
+        name: ['pyhelm', 'grpcio', 'openshift']
+        extra_args: "--ignore-installed ipaddress"
+
+    - name: Create kube config folder
+      file:
+        path: /home/vagrant/.kube/
+        state: directory
+        owner: vagrant
+
+    - name: Link kube config
+      file:
+        src: /etc/kubernetes/admin.conf
+        path: /home/vagrant/.kube/config
+        state: hard
+        owner: vagrant
+
+- name: Kubernetes
+  hosts: all
+  become: false
+  tasks:
+    - name: Create ServiceAccount
+      k8s:
+        name: tiller
+        kind: ServiceAccount
+        api_version: v1
+        namespace: kube-system
+
+    - name: Create role
+      k8s:
+        api_version: rbac.authorization.k8s.io/v1
+        name: tiller-role
+        kind: ClusterRoleBinding
+        namespace: kube-system
+        definition:
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: ClusterRole
+            name: cluster-admin
+          subjects:
+          - kind: ServiceAccount
+            name: tiller
+            namespace: kube-system
+
+    - name: Create the admin user
+      k8s:
+        api_version: v1
+        kind: ServiceAccount
+        name: admin-user
+        namespace: kube-system
+
+    - name: Create the rolebinding
+      k8s:
+        name: admin-user
+        kind: ClusterRoleBinding
+        api_version: rbac.authorization.k8s.io/v1
+        definition:
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: ClusterRole
+            name: cluster-admin
+          subjects:
+          - kind: ServiceAccount
+            name: admin-user
+            namespace: kube-system
+
+    - name: Install the definitions
+      debugger: on_failed
+      k8s:
+        definition: "{{ lookup('url', item, split_lines=False)}}"
+      with_items:
+        - https://raw.githubusercontent.com/kubernetes/dashboard/master/aio/deploy/recommended/kubernetes-dashboard.yaml
+        - https://raw.githubusercontent.com/MaZderMind/hostpath-provisioner/master/manifests/rbac.yaml
+        - https://raw.githubusercontent.com/MaZderMind/hostpath-provisioner/master/manifests/deployment.yaml
+        - https://raw.githubusercontent.com/MaZderMind/hostpath-provisioner/master/manifests/storageclass.yaml
+
+    - name: Initialize helm
+      shell: "/usr/local/bin/helm init --service-account tiller --upgrade"
+
+    # - name: Get tiller config
+    #   k8s_facts:
+    #     api_version: v1
+    #     kind: Service
+    #     namespace: kube-system
+    #     name: tiller-deploy
+    #   register: tiller
+
+    # - name: Install gitlab
+    #   helm:
+    #     host: "{{ tiller.resources[0].spec.clusterIP }}"
+    #     chart:
+    #       name: gitlab-ce
+    #       version: 0.2.2
+    #       source:
+    #         type: repo
+    #         location: https://kubernetes-charts.storage.googleapis.com/
+    #     values:
+    #       externalUrl: "http://gitlab.192-168-33-10.nip.io"
+    #     state: present
+    #     name: gitlab
+    #     namespace: default
+
+    - name: Install gitlab
+      shell: "/usr/local/bin/helm upgrade --install gitlab stable/gitlab-ce --set externalUrl=http://gitlab.192-168-33-10.nip.io"
